@@ -8,7 +8,7 @@ import tempfile
 import time
 import ssl
 import urllib3
-import markdown  # <--- NEW: Import the Markdown library
+import markdown  # Markdown library
 from bs4 import BeautifulSoup 
 
 # Import the generic LLM "facade" library
@@ -40,11 +40,19 @@ logger = logging.getLogger(__name__)
 LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-1.5-flash")
 TARGET_LANGUAGE = os.environ.get("TARGET_LANGUAGE", "English")
 
+# Story Limit (Default: 10)
 try:
     STORY_LIMIT = int(os.environ.get("STORY_LIMIT", 10))
 except ValueError:
     logger.warning("Invalid STORY_LIMIT format. Defaulting to 10.")
     STORY_LIMIT = 10
+
+# Request Delay (Default: 0) - NEW FEATURE
+try:
+    LLM_REQUEST_DELAY = float(os.environ.get("LLM_REQUEST_DELAY", 0))
+except ValueError:
+    logger.warning("Invalid LLM_REQUEST_DELAY format. Defaulting to 0.")
+    LLM_REQUEST_DELAY = 0
 
 HN_TOP_STORIES_URL = "https://hacker-news.firebaseio.com/v0/topstories.json"
 HN_ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{}.json"
@@ -62,6 +70,7 @@ def check_config():
     logger.info(f"Target Language: {TARGET_LANGUAGE}")
     logger.info(f"Story Limit: {STORY_LIMIT}")
     logger.info(f"LLM Model: {LLM_MODEL}")
+    logger.info(f"LLM Request Delay: {LLM_REQUEST_DELAY}s")  # <--- Log the delay
     
     if SMTP_USER:
         logger.info(f"SMTP User: {SMTP_USER[:3]}***")
@@ -119,16 +128,17 @@ def fetch_article_text(url):
     """
     logger.info(f"Downloading content from: {url}")
     
-    # 1. Masquerade as a real, modern Chrome browser on macOS
-    # 2. Add 'Referer' to pretend we clicked the link from Hacker News (whitelisted by many blogs)
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Referer': 'https://news.ycombinator.com/', 
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
+        'Sec-Ch-Ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
         'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'cross-site',
@@ -137,11 +147,10 @@ def fetch_article_text(url):
     }
     
     try:
-        # We use a session to better handle cookies if the site sets them on redirect
         session = requests.Session()
         response = session.get(url, headers=headers, timeout=15, verify=False)
         
-        # Handle 403 specifically by trying a backup User-Agent (sometimes mobile works better)
+        # Retry with Mobile UA on 403
         if response.status_code == 403:
             logger.warning("Got 403 with Desktop UA. Retrying with Mobile UA...")
             headers['User-Agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
@@ -151,19 +160,17 @@ def fetch_article_text(url):
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # REMOVE JUNK: aggressive cleaning of non-article elements
+        # Cleanup
         for script in soup(["script", "style", "nav", "footer", "header", "aside", "iframe", "noscript"]):
-            script.decompose() # Rip them out of the DOM
+            script.decompose()
 
-        # Strategy: Extract text from paragraphs, but fallback to div if p is missing
+        # Extract Text
         paragraphs = soup.find_all('p')
         if len(paragraphs) < 3:
-            # Fallback for sites that use divs for text (like some React apps)
             text_content = soup.get_text(separator=' ')
         else:
             text_content = ' '.join([p.get_text() for p in paragraphs])
         
-        # Clean up whitespace
         text_content = ' '.join(text_content.split())
         
         if len(text_content) < 300:
@@ -259,7 +266,6 @@ def create_epub(stories):
         summary_markdown = summarize_article(story['url'], story['title'])
         
         # 2. Convert Markdown to HTML
-        # We use extensions for extra features like tables or fenced code blocks if needed
         summary_html = markdown.markdown(summary_markdown, extensions=['extra', 'smarty'])
         
         content = f"""
@@ -277,7 +283,10 @@ def create_epub(stories):
         book.add_item(chapter)
         chapters.append(chapter)
         
-        time.sleep(1)
+        # --- NEW DELAY LOGIC ---
+        if LLM_REQUEST_DELAY > 0:
+            logger.info(f"Sleeping for {LLM_REQUEST_DELAY}s to respect rate limits...")
+            time.sleep(LLM_REQUEST_DELAY)
 
     book.toc = tuple(chapters)
     book.add_item(epub.EpubNcx())
