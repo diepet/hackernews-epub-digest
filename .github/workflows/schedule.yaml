@@ -1,0 +1,61 @@
+name: Daily HN Digest
+
+on:
+  schedule:
+    # 05:00 UTC is usually 06:00 CET (Winter) / 07:00 CEST (Summer)
+    - cron: '0 5 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI for testing
+
+jobs:
+  run-digest:
+    runs-on: ubuntu-latest
+    
+    # Global environment variables (Non-secret config)
+    env:
+      TARGET_LANGUAGE: "Italian"   # Change to your preference
+      STORY_LIMIT: "30"
+      LLM_REQUEST_DELAY: "20"       # Sleep 5s to be safe
+      SCRAPE_CHAR_LIMIT: "60000"   # Max chars per article
+      LLM_MODEL: "gemini/gemini-3-flash-preview"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 1. Install uv (The tool you are using)
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      # 2. Set up Python (uv manages the version automatically based on pyproject.toml)
+      - name: Set up Python
+        run: uv python install
+
+      # 3. Install Dependencies (Uses uv.lock for perfect reproduction)
+      - name: Install dependencies
+        run: uv sync
+
+      # 4. Run the Script
+      # We map the Secrets here so they are only available during execution
+      - name: Run Digest Script
+        env:
+          # AI Keys (Map the one you are using)
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          
+          # Azure Keys (If using Azure)
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
+          AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+
+          # Email Config
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_SENDER_EMAIL: ${{ secrets.SMTP_SENDER_EMAIL }}
+          PUBLISH_EMAIL: ${{ secrets.PUBLISH_EMAIL }}
+          
+        run: uv run python main.py
