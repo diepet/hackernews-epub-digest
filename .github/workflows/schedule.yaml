@@ -10,34 +10,35 @@ jobs:
   run-digest:
     runs-on: ubuntu-latest
     
-    # Global environment variables (Non-secret config)
+    # LOGIC: 
+    # 1. Look for a GitHub Variable (vars.NAME)
+    # 2. If not found, use the hardcoded default (|| 'value')
     env:
-      TARGET_LANGUAGE: "Italian"   # Change to your preference
-      STORY_LIMIT: "30"
-      LLM_REQUEST_DELAY: "20"       # Sleep 5s to be safe
-      SCRAPE_CHAR_LIMIT: "60000"   # Max chars per article
-      LLM_MODEL: "gemini/gemini-3-flash-preview"
+      TARGET_LANGUAGE: ${{ vars.TARGET_LANGUAGE || 'English' }}
+      STORY_LIMIT: ${{ vars.STORY_LIMIT || '10' }}
+      LLM_REQUEST_DELAY: ${{ vars.LLM_REQUEST_DELAY || '0' }}
+      SCRAPE_CHAR_LIMIT: ${{ vars.SCRAPE_CHAR_LIMIT || '60000' }}
+      LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemini-1.5-flash' }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. Install uv (The tool you are using)
+      # 1. Install uv
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
 
-      # 2. Set up Python (uv manages the version automatically based on pyproject.toml)
+      # 2. Set up Python
       - name: Set up Python
         run: uv python install
 
-      # 3. Install Dependencies (Uses uv.lock for perfect reproduction)
+      # 3. Install Dependencies
       - name: Install dependencies
         run: uv sync
 
       # 4. Run the Script
-      # We map the Secrets here so they are only available during execution
       - name: Run Digest Script
         env:
           # AI Keys (Map the one you are using)

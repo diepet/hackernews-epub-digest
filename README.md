@@ -25,11 +25,12 @@ If running on GitHub, add these to **Settings -> Secrets and variables -> Action
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
+| `LLM_MODEL` | *Required* | The model to use (e.g., `gemini/gemini-1.5-flash`, `gpt-4o`). |
+| `PUBLISH_EMAIL` | *Required* | Destination email address (e.g., `yourname@kindle.com`). |
 | `TARGET_LANGUAGE` | `English` | The language for the output summaries (e.g., `Italian`, `German`). |
 | `STORY_LIMIT` | `10` | Number of top stories to process per run. |
-| `LLM_REQUEST_DELAY` | `0` | **(New)** Seconds to sleep between articles. Useful for free-tier APIs (e.g., set to `5` or `10`). |
-| `SCRAPE_CHAR_LIMIT` | `60000` | **(New)** Max characters to send to the LLM per article. Saves context tokens. |
-| `PUBLISH_EMAIL` | *Required* | Destination email address (e.g., `yourname@kindle.com`). |
+| `LLM_REQUEST_DELAY` | `0` | Seconds to sleep between articles (e.g., `5` or `10`). |
+| `SCRAPE_CHAR_LIMIT` | `60000` | Max characters to send to the LLM per article. |
 
 ### 2. SMTP / Email Configuration
 
@@ -86,6 +87,7 @@ This project uses [LiteLLM](https://docs.litellm.ai/), so it supports 100+ model
     ```bash
     # AI
     export GEMINI_API_KEY="your_key"
+    export LLM_MODEL="gemini/gemini-1.5-flash"
     
     # Email
     export SMTP_HOST="smtp.gmail.com"
@@ -96,7 +98,7 @@ This project uses [LiteLLM](https://docs.litellm.ai/), so it supports 100+ model
     
     # Tuning
     export STORY_LIMIT="5"
-    export LLM_REQUEST_DELAY="5"  # Sleep 5s between requests
+    export LLM_REQUEST_DELAY="5"
     ```
 
 4.  **Run the script**

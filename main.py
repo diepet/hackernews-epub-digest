@@ -30,7 +30,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION VARIABLES ---
-LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-1.5-flash")
+LLM_MODEL = os.environ.get("LLM_MODEL")
+if not LLM_MODEL:
+    logger.critical("❌ CRITICAL ERROR: LLM_MODEL environment variable is missing.")
+    logger.critical("Please set LLM_MODEL (e.g., 'gemini/gemini-1.5-flash' or 'gpt-4o').")
+    sys.exit(1) # Stop execution immediately
+
 TARGET_LANGUAGE = os.environ.get("TARGET_LANGUAGE", "English")
 
 try:
