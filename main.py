@@ -250,7 +250,8 @@ def create_epub(stories):
     temp_dir = os.path.join(tempfile.gettempdir(), "hackernews-epub-digest-files")
     os.makedirs(temp_dir, exist_ok=True) 
     
-    filename = f'hn_digest_{date_str}.epub'
+    file_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    filename = f'hn_digest_{file_timestamp}.epub'
     full_path = os.path.join(temp_dir, filename)
     
     logger.info(f"📚 Starting EPUB book creation. Target file: {full_path}")
