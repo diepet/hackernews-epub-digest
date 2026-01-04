@@ -26,7 +26,7 @@ If running on GitHub, add these to **Settings -> Secrets and variables -> Action
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `LLM_MODEL` | *Required* | The LLM provider and model by using the LiteLLM syntax (e.g., `gemini/gemini-1.5-flash`, `openai/gpt-4o`). Full list here: [https://docs.litellm.ai/docs/providers](https://docs.litellm.ai/docs/providers) |
+| `LLM_MODEL` | *Required* | The LLM provider and model by using the LiteLLM syntax (e.g., `gemini/gemini-1.5-flash`, `openai/gpt-4o`). Full list: [https://docs.litellm.ai/docs/providers](https://docs.litellm.ai/docs/providers) |
 | `PUBLISH_EMAIL` | *Required* | Destination email address (e.g., `yourname@kindle.com`). |
 | `TARGET_LANGUAGE` | `English` | The language for the output summaries (e.g., `Italian`, `German`). |
 | `STORY_LIMIT` | `10` | Number of top stories to process per run. |
