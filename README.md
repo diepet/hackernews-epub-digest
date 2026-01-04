@@ -13,6 +13,7 @@ It runs automatically on GitHub Actions for **free** (or low cost depending on y
 * **Cost & Quota Management:**
     * `LLM_REQUEST_DELAY`: Prevents hitting API rate limits (429 errors).
     * `SCRAPE_CHAR_LIMIT`: Truncates long articles to save tokens and costs.
+* **Customizable Logging:** Fine-tune verbosity using `LOG_LEVEL` variables for easier debugging.
 * **Multi-Language Support:** Can translate and summarize content in **Italian**, Spanish, French, etc.
 * **Secure Email:** Supports standard SMTP with SSL (465) or STARTTLS (587).
 
@@ -31,6 +32,8 @@ If running on GitHub, add these to **Settings -> Secrets and variables -> Action
 | `STORY_LIMIT` | `10` | Number of top stories to process per run. |
 | `LLM_REQUEST_DELAY` | `0` | Seconds to sleep between articles (e.g., `5` or `10`). |
 | `SCRAPE_CHAR_LIMIT` | `60000` | Max characters to send to the LLM per article. |
+| `LOG_LEVEL` | `INFO` | Logging level for the main script (e.g., `DEBUG` for verbose output). |
+| `ROOT_LOG_LEVEL` | `INFO` | Logging level for external libraries (requests, urllib3, etc.). |
 
 ### 2. SMTP / Email Configuration
 
@@ -96,9 +99,9 @@ This project uses [LiteLLM](https://docs.litellm.ai/), so it supports 100+ model
     export SMTP_PASSWORD="your_app_password"
     export PUBLISH_EMAIL="kindle@kindle.com"
     
-    # Tuning
+    # Tuning and Logging
     export STORY_LIMIT="5"
-    export LLM_REQUEST_DELAY="5"
+    export LOG_LEVEL="DEBUG"
     ```
 
 4.  **Run the script**

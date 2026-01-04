@@ -207,27 +207,41 @@ def summarize_article(url, title):
     logger.info(f"Successfully scraped {len(article_text)} chars. Sending to LLM.")
     
     # Updated Prompt: Force dash bullets and explicit spacing
+
+    # ... (dentro summarize_article) ...
+
+    # Prompt ottimizzato in Inglese per performance migliori
     prompt = f"""
-    You are a helpful technical assistant.
-    Task: Summarize the article text provided below.
+    Act as a Senior Tech Editor writing for a high-quality newsletter.
     
-    Article Title: {title}
-    Source URL: {url}
+    Your task is to write a concise yet comprehensive summary of the article provided below.
+    
+    **Article Details:**
+    - Title: {title}
+    - Source: {url}
+    - Target Output Language: {TARGET_LANGUAGE}
     
     [START OF ARTICLE TEXT]
     {article_text}
     [END OF ARTICLE TEXT]
     
-    Requirements:
-    1. Make a detailed summary of the article.
-    2. **Use standard dashes '-' for bullet points.** Do NOT use asterisks '*' for lists.
-    3. Ensure there is a blank line before starting any list.
-    4. **CRITICAL: Write the output strictly in {TARGET_LANGUAGE}.**
+    **STRICT WRITING GUIDELINES:**
     
+    1. **NO Meta-Commentary:** Do NOT start with phrases like "Here is a summary", "The article discusses", "In this post", "Sure!", or "Here is the text". Jump straight into the content (e.g., "The new React compiler automatically optimizes...").
+    2. **Narrative Flow:** Write primarily in **paragraphs**. Avoid creating a "shopping list" of bullet points. The text should read like a story or a news report, not a changelog.
+    3. **Structure:**
+       - **The Hook:** Start with the most important finding, release, or argument.
+       - **The Details:** Explain *how* or *why* it works in a discursive manner.
+       - **The Impact:** Briefly mention why this matters to the tech community.
+    4. **Language:** The output must be strictly written in **{TARGET_LANGUAGE}**.
+    
+    Goal: Create a summary that is engaging and easy to read, capturing the technical depth without robotic formatting.
+
     Output Format:
     - Return strictly Markdown formatted text.
+    - If you use bullet points, ensure there is a blank line before starting any list with the "-" character.
     """
-    
+
     try:
         response = completion(
             model=LLM_MODEL,
