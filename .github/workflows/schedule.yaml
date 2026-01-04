@@ -43,13 +43,6 @@ jobs:
         env:
           # AI Keys (Map the one you are using)
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          
-          # Azure Keys (If using Azure)
-          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
-          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
-          AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
 
           # Email Config
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
