@@ -26,7 +26,7 @@ If running on GitHub, add these to **Settings -> Secrets and variables -> Action
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `LLM_MODEL` | *Required* | The LLM provider and model by using the LiteLLM syntax (e.g., `gemini/gemini-1.5-flash`, `openai/gpt-4o`). [Click here](https://docs.litellm.ai/docs/providers) for the full list. |
+| `LLM_MODEL` | *Required* | The LLM provider and model by using the LiteLLM syntax (e.g., `gemini/gemini-3-flash`, `openai/gpt-4o`). [Click here](https://docs.litellm.ai/docs/providers) for the full list. |
 | `PUBLISH_EMAIL` | *Required* | Destination email address (e.g., `yourname@kindle.com`). |
 | `TARGET_LANGUAGE` | `English` | The language for the output summaries (e.g., `Italian`, `German`). |
 | `STORY_LIMIT` | `10` | Number of top stories to process per run. |
@@ -111,7 +111,7 @@ This project uses [LiteLLM](https://docs.litellm.ai/), so it supports 100+ model
 
 ## ☁️ Deployment (GitHub Actions)
 
-This repository includes a `.github/workflows/schedule.yml` that runs automatically.
+This repository includes a `.github/workflows/schedule.yml` that runs automatically with the needed environment variables for Gemini.
 
 1.  **Fork** this repository.
 2.  Go to **Settings** -> **Secrets and variables** -> **Actions**.

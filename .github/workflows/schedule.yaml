@@ -18,7 +18,7 @@ jobs:
       STORY_LIMIT: ${{ vars.STORY_LIMIT || '10' }}
       LLM_REQUEST_DELAY: ${{ vars.LLM_REQUEST_DELAY || '0' }}
       SCRAPE_CHAR_LIMIT: ${{ vars.SCRAPE_CHAR_LIMIT || '60000' }}
-      LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemini-1.5-flash' }}
+      LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemma-3-27b-it' }}
 
     steps:
       - name: Checkout code
