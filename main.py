@@ -22,12 +22,21 @@ from ebooklib import epub
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- LOGGING CONFIGURATION ---
+# Get log level from environment variable, default to INFO
+LOG_LEVEL_STR = os.environ.get("LOG_LEVEL", "INFO").upper()
+ROOT_LOG_LEVEL_STR = os.environ.get("ROOT_LOG_LEVEL", "INFO").upper()
+
+# Convert string to logging level constant
+LOG_LEVEL = getattr(logging, LOG_LEVEL_STR, logging.INFO)
+ROOT_LOG_LEVEL = getattr(logging, ROOT_LOG_LEVEL_STR, logging.INFO)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=ROOT_LOG_LEVEL,
     format='%(asctime)s [%(levelname)s] %(funcName)s: %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+logger.setLevel(LOG_LEVEL)
 
 # --- CONFIGURATION VARIABLES ---
 LLM_MODEL = os.environ.get("LLM_MODEL")
@@ -127,7 +136,7 @@ def fetch_article_text(url):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br, zstd',
+        'Accept-Encoding': 'gzip, deflate',
         'Referer': 'https://news.ycombinator.com/', 
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
@@ -173,8 +182,13 @@ def fetch_article_text(url):
              logger.warning(f"Content too short ({len(text_content)} chars).")
              return None
 
+        scraped_text = text_content[:SCRAPE_CHAR_LIMIT]
+
+        logger.debug("Extracted Scraped Text Content:")
+        logger.debug(scraped_text)
+
         # --- UPDATED LINE: USING ENV VARIABLE ---
-        return text_content[:SCRAPE_CHAR_LIMIT]  
+        return scraped_text  
         
     except Exception as e:
         logger.warning(f"Failed to scrape text from {url}: {e}")
