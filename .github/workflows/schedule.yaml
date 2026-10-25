@@ -3,7 +3,7 @@ name: Daily HN Digest
 on:
   schedule:
     # 04:17 CET / 05:17 CEST; avoid the busy start of the UTC hour.
-    - cron: '17 3 * * *'
+    - cron: '17 3,15 * * *'
   workflow_dispatch:
 
 permissions:
