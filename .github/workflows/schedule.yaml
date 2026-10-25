@@ -102,7 +102,8 @@ jobs:
                   labels = {'mode': 'Mode', 'status': 'Result', 'requested': 'Requested stories',
                             'fetched': 'Fetched stories', 'extracted': 'Readable sources',
                             'summarized': 'Generated summaries', 'email_sent': 'SMTP accepted email',
-                            'duration_seconds': 'Elapsed seconds'}
+                            'duration_seconds': 'Elapsed seconds',
+                            'quality_warnings': 'Summaries needing editorial review'}
                   for key, label in labels.items():
                       summary.write(f'- **{label}**: {report.get(key, "not reported")}\n')
                   if report.get('failure_reason'):
@@ -115,6 +116,8 @@ jobs:
                   for item in report.get('stories', []):
                       title = escape(item['title']).replace('|', '&#124;').replace('\n', ' ').replace('\r', ' ')
                       status = item['status'].replace('_', ' ')
+                      if item.get('quality_warnings'):
+                          status += '; review summary'
                       summary.write(f'| {title} | {status} | {item.get("source_characters", "—")} | '
                                     f'{item.get("summary_words", "—")} |\n')
                   summary.write('\nDownload the artifact for the EPUB and detailed run report.\n')

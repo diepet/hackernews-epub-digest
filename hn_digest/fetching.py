@@ -6,7 +6,7 @@ import re
 import time
 from copy import deepcopy
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 import structlog
@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from requests.adapters import HTTPAdapter
 from trafilatura.settings import DEFAULT_CONFIG
+from urllib3.exceptions import InvalidHeader
 from urllib3.util.retry import Retry
 
 from hn_digest.config import Config
@@ -63,9 +64,34 @@ def http_url(url: str) -> bool:
 class LoggedRetry(Retry):
     """Expose transient network retries without printing request headers or error bodies."""
 
+    def get_backoff_time(self):
+        delay = super().get_backoff_time()
+        # A rate-limited site should not receive an immediate duplicate request.
+        return max(1.0, delay) if self.history and self.history[-1].status == 429 else delay
+
+    def get_retry_after(self, response):
+        value = response.headers.get("Retry-After")
+        if value is None:
+            return None
+        try:
+            # Do not shorten the server's requested wait to our maximum and retry too early.
+            delay = Retry(retry_after_max=float("inf")).parse_retry_after(value)
+        except InvalidHeader:
+            log.warning("Ignoring invalid HTTP Retry-After header", stage="Source")
+            return None
+        if delay > self.retry_after_max:
+            raise FetchError(
+                f"Source requested an HTTP cooldown longer than {self.retry_after_max:g}s; "
+                "skipping instead of retrying early"
+            )
+        return delay
+
     def increment(self, method=None, url=None, response=None, error=None, **kwargs):
         retry = super().increment(method=method, url=url, response=response, error=error, **kwargs)
         delay = retry.get_retry_after(response) if response is not None else None
+        pool = kwargs.get("_pool")
+        if pool is not None and url:
+            url = urljoin(f"{pool.scheme}://{pool.host}", url)
         stage = "HN" if url and ("/v0/item/" in url or "topstories.json" in url) else "Source"
         log.warning(
             "HTTP request failed temporarily; retrying",
@@ -94,6 +120,7 @@ def make_session(config: Config) -> requests.Session:
         retry_after_max=30,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
     )
     for scheme in ("https://", "http://"):
         session.mount(scheme, HTTPAdapter(max_retries=retry))
@@ -107,6 +134,8 @@ def download(session: requests.Session, url: str, config: Config) -> tuple[bytes
     with session.get(
         url, timeout=(config.http_timeout, config.http_timeout), stream=True
     ) as response:
+        if response.status_code == 429:
+            raise FetchError("Source returned HTTP 429 (rate limited; HTTP retry budget exhausted)")
         response.raise_for_status()
         length = response.headers.get("Content-Length", "")
         if length.isdecimal() and int(length) > config.max_download_bytes:
@@ -211,8 +240,30 @@ def extract_html(content: bytes | str, url: str) -> str:
     title = soup.title.get_text(" ", strip=True).lower() if soup.title else ""
     if any(title.startswith(marker) for marker in CHALLENGE_TITLES):
         raise FetchError("Source returned an access challenge")
-    for node in soup(["script", "style", "nav", "footer", "aside", "iframe", "noscript", "form"]):
+    structured_text = extract_structured_article(soup)
+    for node in soup.select('[hidden], [aria-hidden="true"]'):
+        if node.parent is not None:
+            node.decompose()
+    for node in soup(
+        [
+            "script",
+            "style",
+            "nav",
+            "footer",
+            "aside",
+            "iframe",
+            "noscript",
+            "input",
+            "button",
+            "select",
+            "textarea",
+            "label",
+        ]
+    ):
         node.decompose()
+    # Interactive landing pages can put their only useful explanation inside a form.
+    for form in soup("form"):
+        form.unwrap()
     # Prefer the GitHub README over repository navigation and file listings.
     readme = soup.select_one("article.markdown-body")
     if readme:
@@ -221,20 +272,65 @@ def extract_html(content: bytes | str, url: str) -> str:
     cleaned = str(soup)
     extraction_config = deepcopy(DEFAULT_CONFIG)
     extraction_config["DEFAULT"]["MAX_TREE_SIZE"] = "100000"
-    text = trafilatura.extract(
-        cleaned,
-        url=url,
-        include_comments=False,
-        include_tables=True,
-        favor_precision=True,
-        config=extraction_config,
-    )
+    try:
+        text = trafilatura.extract(
+            cleaned,
+            url=url,
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
+            config=extraction_config,
+        )
+    except Exception as exc:
+        log.warning(
+            "Primary HTML extractor failed; trying source fallbacks",
+            stage="Source",
+            error_type=type(exc).__name__,
+        )
+        text = None
     if text and len(text.strip()) >= 200:
         log.info("HTML article extracted", stage="Source", method="Trafilatura")
         return text
+    if structured_text:
+        log.info("Using structured article body", stage="Source", method="JSON-LD articleBody")
+        return structured_text
     log.info("Using HTML extraction fallback", stage="Source", method="Beautiful Soup")
-    main = soup.find("article") or soup.find("main") or soup.body or soup
-    return main.get_text("\n", strip=True)
+    for main in soup.find_all(["article", "main"]):
+        text = main.get_text("\n", strip=True)
+        if len(text) >= 200:
+            return text
+    return (soup.body or soup).get_text("\n", strip=True)
+
+
+def extract_structured_article(soup: BeautifulSoup) -> str:
+    """Recover an actual article body, never a search snippet or social description."""
+    candidates = []
+    article_types = {"Article", "NewsArticle", "BlogPosting", "TechArticle", "ScholarlyArticle"}
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            pending = [json.loads(script.string or script.get_text())]
+        except (ValueError, RecursionError):
+            continue
+        while pending:
+            item = pending.pop()
+            if isinstance(item, list):
+                pending.extend(item)
+            elif isinstance(item, dict):
+                types = item.get("@type", [])
+                types = [types] if isinstance(types, str) else types
+                if (
+                    isinstance(types, list)
+                    and any(t in article_types for t in types if isinstance(t, str))
+                    and item.get("isAccessibleForFree") not in (False, "false")
+                    and isinstance(item.get("articleBody"), str)
+                ):
+                    body = BeautifulSoup(item["articleBody"], "html.parser").get_text(
+                        "\n", strip=True
+                    )
+                    if len(body) >= 200:
+                        candidates.append(body)
+                pending.extend(value for value in item.values() if isinstance(value, (dict, list)))
+    return max(candidates, key=len, default="")
 
 
 def extract_pdf(content: bytes, config: Config) -> str:
@@ -269,6 +365,9 @@ def fetch_article_text(session: requests.Session, story: Story, config: Config) 
             )
             text = BeautifulSoup(story.text, "html.parser").get_text("\n", strip=True)
         else:
+            host = (urlsplit(story.url).hostname or "").lower().removeprefix("www.")
+            if host in {"youtube.com", "m.youtube.com", "youtu.be"}:
+                raise FetchError("Video source requires a transcript; no article text is available")
             log.info("Downloading article", stage="Source", url=safe_url(story.url))
             content, content_type, final_url = download(session, story.url, config)
             if content.lstrip().startswith(b"%PDF-") or "application/pdf" in content_type:

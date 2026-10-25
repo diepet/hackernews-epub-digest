@@ -164,13 +164,15 @@ def test_http_retries_are_visible_and_hide_sensitive_urls(capsys):
     retry = fetching.LoggedRetry(total=2, backoff_factor=1)
     result = retry.increment(
         method="GET",
-        url="https://example.org/article?token=private",
+        url="/article?token=private",
         response=HTTPResponse(status=429, headers={"Retry-After": "3"}),
+        _pool=SimpleNamespace(scheme="https", host="example.org"),
     )
     output = capsys.readouterr().out
     assert "HTTP request failed temporarily; retrying" in output
     assert "HTTP 429" in output and "wait: 3.00s" in output
     assert "private" not in output
+    assert "https://example.org/article" in output
     assert result.total == 1
 
 

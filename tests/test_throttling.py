@@ -245,6 +245,47 @@ def test_transient_failure_retries_through_the_same_limiter(sdk, clock, monkeypa
     assert 1 <= clock.now <= 2
 
 
+@pytest.mark.parametrize(
+    "empty",
+    [
+        SimpleNamespace(choices=[]),
+        SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="stop")]
+        ),
+    ],
+)
+def test_empty_llm_response_retries_and_counts_each_attempt(sdk, clock, monkeypatch, empty):
+    completion = MagicMock(side_effect=[empty, response()])
+    monkeypatch.setattr(sdk, "completion", completion)
+    limiter = RateLimiter(Config())
+    assert llm.summarize_article("Source", "Title", "https://example.org", Config(), limiter)
+    assert completion.call_count == limiter.requests_sent == 2
+    assert 1 <= clock.now <= 2
+
+
+def test_repeated_empty_response_exhausts_bounded_attempts(sdk, clock, monkeypatch):
+    completion = MagicMock(return_value=SimpleNamespace(choices=[]))
+    monkeypatch.setattr(sdk, "completion", completion)
+    with pytest.raises(llm.SummaryError, match="after bounded retries"):
+        llm.summarize_article("Source", "Title", "https://example.org", Config(max_retries=2))
+    assert completion.call_count == 3
+    assert 3 <= clock.now <= 5
+
+
+def test_content_block_is_not_retried_as_an_empty_response(sdk, clock, monkeypatch):
+    blocked = SimpleNamespace(
+        choices=[
+            SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="content_filter")
+        ]
+    )
+    completion = MagicMock(return_value=blocked)
+    monkeypatch.setattr(sdk, "completion", completion)
+    with pytest.raises(llm.SummaryError, match="blocked"):
+        llm.summarize_article("Source", "Title", "https://example.org", Config())
+    completion.assert_called_once()
+    assert not clock.sleeps
+
+
 def test_model_tokenizer_and_output_allowance_are_included(sdk, monkeypatch):
     counter = MagicMock(return_value=1000)
     monkeypatch.setattr(sdk, "token_counter", counter)

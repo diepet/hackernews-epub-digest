@@ -13,7 +13,7 @@ from hn_digest.config import DEFAULT_SYSTEM_PROMPT, Config
 from hn_digest.fetching import FetchError, fetch_article_text, get_top_stories, make_session
 from hn_digest.llm import ModelError, SummaryError, summarize_article
 from hn_digest.logging_config import safe_url
-from hn_digest.publishing import Article, create_epub, send_email
+from hn_digest.publishing import Article, create_epub, send_email, summary_body_word_count
 from hn_digest.throttling import RateLimiter
 
 log = structlog.get_logger(__name__)
@@ -140,19 +140,12 @@ def run_digest(config: Config, output_dir: Path, *, dry_run: bool, no_llm: bool)
                             }
                         )
                         log.warning(
-                            "Source unavailable; including its link without a summary",
+                            "Source unavailable; adding story to Other Articles",
                             stage="Source",
                             error_type=type(exc).__name__,
                             reason=reason,
                         )
-                        articles.append(
-                            Article(
-                                story,
-                                "Could not retrieve readable source content. "
-                                "Use the source link to read it online.",
-                                "unavailable",
-                            )
-                        )
+                        articles.append(Article(story, "", "unavailable"))
                         continue
                     report["extracted"] += 1
                     item.update(
@@ -188,18 +181,11 @@ def run_digest(config: Config, output_dir: Path, *, dry_run: bool, no_llm: bool)
                             }
                         )
                         log.warning(
-                            "Summary unavailable; including the source link",
+                            "Summary unavailable; adding story to Other Articles",
                             stage="LLM",
                             reason=reason,
                         )
-                        articles.append(
-                            Article(
-                                story,
-                                "AI summary unavailable for this story. "
-                                "Use the source link to read it online.",
-                                "unavailable",
-                            )
-                        )
+                        articles.append(Article(story, "", "unavailable"))
                         continue
                     except ModelError as exc:
                         item.update(status="summary_unavailable", reason=str(exc))
@@ -211,6 +197,25 @@ def run_digest(config: Config, output_dir: Path, *, dry_run: bool, no_llm: bool)
                         summary_words=len(summary.split()),
                         summary_seconds=round(time.monotonic() - summary_started, 2),
                     )
+                    if config.llm_system_prompt == DEFAULT_SYSTEM_PROMPT:
+                        body_words = summary_body_word_count(summary)
+                        warnings = []
+                        if body_words > 250:
+                            warnings.append("Summary exceeds the default prompt's 250-word maximum")
+                        if len(text) < 500 and body_words > 120:
+                            warnings.append(
+                                "Very short source expanded beyond the prompt's short-source range; "
+                                "review for unsupported detail"
+                            )
+                        item.update(summary_body_words=body_words, quality_warnings=warnings)
+                        for warning in warnings:
+                            log.warning(
+                                "Summary needs editorial review",
+                                stage="LLM",
+                                reason=warning,
+                                summary_body_words=body_words,
+                                source_words=item["source_words"],
+                            )
                     log.info(
                         "Summary ready",
                         stage="LLM",
@@ -249,6 +254,9 @@ def run_digest(config: Config, output_dir: Path, *, dry_run: bool, no_llm: bool)
         raise
     finally:
         report["duration_seconds"] = round(time.monotonic() - started, 2)
+        report["quality_warnings"] = sum(
+            bool(item.get("quality_warnings")) for item in report["stories"]
+        )
         if limiter is not None:
             report["llm"] = {
                 "requests_sent": limiter.requests_sent,
@@ -278,6 +286,7 @@ def run_digest(config: Config, output_dir: Path, *, dry_run: bool, no_llm: bool)
             "failed_summaries": sum(
                 item["status"] == "summary_unavailable" for item in report["stories"]
             ),
+            "quality_warnings": report["quality_warnings"],
             "duration_seconds": report["duration_seconds"],
             "email_status": "accepted by SMTP"
             if report["email_sent"]

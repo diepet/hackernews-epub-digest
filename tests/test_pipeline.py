@@ -92,6 +92,35 @@ def test_partial_ai_failure_delivers_but_returns_failure(monkeypatch, tmp_path, 
     email.assert_called_once()
 
 
+def test_oversized_summary_is_flagged_without_extra_model_requests(monkeypatch, tmp_path, sources):
+    ai = MagicMock(return_value="Tags: One, Two, Three\n\n**Central idea**\n" + "Evidence " * 270)
+    monkeypatch.setattr(pipeline, "summarize_article", ai)
+    assert pipeline.run_digest(Config(), tmp_path, dry_run=True, no_llm=False) == 0
+    report = read_report(tmp_path)
+    assert ai.call_count == 2
+    assert report["quality_warnings"] == 2
+    assert report["stories"][0]["summary_body_words"] == 270
+    assert "250-word maximum" in report["stories"][0]["quality_warnings"][0]
+
+
+def test_large_expansion_of_a_brief_source_is_flagged(monkeypatch, tmp_path, sources):
+    monkeypatch.setattr(pipeline, "fetch_article_text", lambda *args: "Brief source. " * 10)
+    monkeypatch.setattr(pipeline, "summarize_article", lambda *args: "Detail " * 130)
+    assert pipeline.run_digest(Config(), tmp_path, dry_run=True, no_llm=False) == 0
+    report = read_report(tmp_path)
+    assert report["quality_warnings"] == 2
+    assert "short-source range" in report["stories"][0]["quality_warnings"][0]
+
+
+def test_custom_prompts_do_not_receive_default_length_warnings(monkeypatch, tmp_path, sources):
+    monkeypatch.setattr(pipeline, "summarize_article", lambda *args: "Detail " * 400)
+    config = Config(llm_system_prompt="Write an extended technical report.")
+    assert pipeline.run_digest(config, tmp_path, dry_run=True, no_llm=False) == 0
+    report = read_report(tmp_path)
+    assert report["quality_warnings"] == 0
+    assert "summary_body_words" not in report["stories"][0]
+
+
 def test_bad_model_stops_after_first_attempt(monkeypatch, tmp_path, sources):
     ai = MagicMock(side_effect=pipeline.ModelError("Check model"))
     monkeypatch.setattr(pipeline, "summarize_article", ai)
@@ -138,14 +167,14 @@ def test_ai_response_validation_and_timeouts(monkeypatch, text, finish, valid):
     if valid:
         assert (
             pipeline.summarize_article(
-                "Source", "Title", "https://example.org", Config(llm_model="test")
+                "Source", "Title", "https://example.org", Config(llm_model="test", max_retries=0)
             )
             == text
         )
     else:
         with pytest.raises(pipeline.SummaryError):
             pipeline.summarize_article(
-                "Source", "Title", "https://example.org", Config(llm_model="test")
+                "Source", "Title", "https://example.org", Config(llm_model="test", max_retries=0)
             )
     assert completion.call_args.kwargs["timeout"] == 90
     assert completion.call_args.kwargs["num_retries"] == 0

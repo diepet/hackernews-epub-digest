@@ -61,6 +61,8 @@ _LABELS = {
     "timeout_seconds": "timeout",
     "email_status": "email",
     "max_attempts": "maximum attempts",
+    "summary_body_words": "summary body words",
+    "quality_warnings": "summaries needing review",
 }
 
 

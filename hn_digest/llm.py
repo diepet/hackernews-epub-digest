@@ -26,6 +26,10 @@ class ModelError(RuntimeError):
     """A provider/model configuration failure that should stop the run."""
 
 
+class EmptyResponseError(SummaryError):
+    """An empty or malformed provider reply that can succeed on a later attempt."""
+
+
 def article_messages(text: str, title: str, url: str, config: Config) -> list[dict[str, str]]:
     # Replace only the documented placeholder; leave JSON/code braces in custom prompts intact.
     system_prompt = config.llm_system_prompt.replace("{target_language}", config.target_language)
@@ -166,16 +170,22 @@ def summarize_article(
                 if counts["reported_tokens"] is not None
                 else "token usage not reported by provider",
             )
-            choice = response.choices[0]
-            result = choice.message.content
-            if not isinstance(result, str) or not result.strip():
-                raise SummaryError("Provider returned an empty summary")
-            if choice.finish_reason == "length":
+            choices = getattr(response, "choices", None)
+            if not choices:
+                raise EmptyResponseError("Provider returned no summary choices")
+            choice = choices[0]
+            finish_reason = getattr(choice, "finish_reason", None)
+            result = getattr(getattr(choice, "message", None), "content", None)
+            if finish_reason == "length":
                 raise SummaryError(
                     "Summary reached LLM_MAX_OUTPUT_TOKENS; increase the output allowance"
                 )
-            if choice.finish_reason != "stop":
+            if finish_reason not in {"stop", None}:
                 raise SummaryError("Provider returned an incomplete or blocked summary")
+            if not isinstance(result, str) or not result.strip():
+                raise EmptyResponseError("Provider returned an empty summary")
+            if finish_reason is None:
+                raise EmptyResponseError("Provider returned a summary without a completion status")
             return result.strip()
         except (AuthenticationError, BadRequestError, NotFoundError, PermissionDeniedError) as exc:
             raise ModelError("Check LLM_MODEL, the provider API key, and model access") from exc
@@ -196,13 +206,23 @@ def summarize_article(
                 seconds=round(delay, 2),
                 retry=attempt + 1,
             )
-        except (APIConnectionError, InternalServerError, ServiceUnavailableError, Timeout) as exc:
+        except (
+            APIConnectionError,
+            InternalServerError,
+            ServiceUnavailableError,
+            Timeout,
+            EmptyResponseError,
+        ) as exc:
             if attempt == config.max_retries:
+                if isinstance(exc, EmptyResponseError):
+                    raise SummaryError(f"{exc} after bounded retries") from exc
                 raise SummaryError(f"LLM request failed ({type(exc).__name__})") from exc
             delay = 2**attempt + random.uniform(0, 1)
             limiter.defer(delay)
             log.warning(
-                "Transient LLM failure; retrying",
+                "Empty or malformed LLM response; retrying"
+                if isinstance(exc, EmptyResponseError)
+                else "Transient LLM failure; retrying",
                 stage="LLM",
                 error_type=type(exc).__name__,
                 retry=attempt + 1,

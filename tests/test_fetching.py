@@ -1,11 +1,14 @@
 import io
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock
 
 import pytest
 import requests
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from urllib3.response import HTTPResponse
 
 from hn_digest import fetching
 from hn_digest.config import Config
@@ -165,3 +168,118 @@ def test_http_retries_are_bounded_and_only_apply_to_get():
         assert retry.total == 2
         assert retry.allowed_methods == {"GET"}
         assert retry.retry_after_max == 30
+        assert not retry.raise_on_status
+        assert 403 not in retry.status_forcelist
+
+
+def test_form_explanations_survive_and_empty_main_does_not_hide_them(monkeypatch):
+    monkeypatch.setattr(fetching.trafilatura, "extract", lambda *args, **kwargs: None)
+    html = f"""<body><form><label>SEARCH CONTROL</label><input value="PRIVATE INPUT">
+    <div><p>{ARTICLE}</p></div><button>SUBMIT CONTROL</button></form>
+    <main hidden><p>HIDDEN TEMPLATE</p></main><main></main></body>"""
+    text = fetching.extract_html(html, "https://example.org/interactive")
+    assert "batching disk writes" in text
+    assert "CONTROL" not in text
+    assert "PRIVATE INPUT" not in text
+    assert "HIDDEN TEMPLATE" not in text
+
+
+def test_primary_extractor_failure_falls_back_to_readable_article(monkeypatch):
+    monkeypatch.setattr(
+        fetching.trafilatura, "extract", MagicMock(side_effect=ValueError("parser failure"))
+    )
+    assert ARTICLE.strip() in fetching.extract_html(
+        f"<article><p>{ARTICLE}</p></article>", "https://example.org"
+    )
+
+
+def test_structured_article_body_is_recovered_without_using_social_descriptions(monkeypatch):
+    monkeypatch.setattr(fetching.trafilatura, "extract", lambda *args, **kwargs: None)
+    data = {"@graph": [{"@type": "NewsArticle", "articleBody": ARTICLE}]}
+    html = (
+        '<meta property="og:description" content="TEASER ONLY">'
+        '<script type="application/ld+json">invalid json</script>'
+        f'<script type="application/ld+json">{json.dumps(data)}</script><body></body>'
+    )
+    assert fetching.extract_html(html, "https://example.org") == ARTICLE.strip()
+
+
+def test_paid_structured_content_is_not_used_as_a_fallback(monkeypatch):
+    monkeypatch.setattr(fetching.trafilatura, "extract", lambda *args, **kwargs: None)
+    data = {"@type": "NewsArticle", "articleBody": ARTICLE, "isAccessibleForFree": False}
+    html = f'<script type="application/ld+json">{json.dumps(data)}</script><body>TEASER</body>'
+    assert fetching.extract_html(html, "https://example.org") == "TEASER"
+
+
+@pytest.mark.parametrize("url", ["https://www.youtube.com/watch?v=123", "https://youtu.be/123"])
+def test_video_pages_are_explicitly_unavailable_without_a_transcript(monkeypatch, url):
+    download = MagicMock()
+    monkeypatch.setattr(fetching, "download", download)
+    with pytest.raises(FetchError, match="requires a transcript"):
+        fetching.fetch_article_text(MagicMock(), Story(1, "Video", url), Config())
+    download.assert_not_called()
+
+
+def test_exhausted_http_rate_limit_keeps_status_in_failure_reason():
+    response = MagicMock(status_code=429)
+    session = MagicMock()
+    session.get.return_value.__enter__.return_value = response
+    with pytest.raises(FetchError, match="HTTP 429.*retry budget exhausted"):
+        fetching.fetch_article_text(session, Story(1, "Title", "https://example.org"), Config())
+
+
+def test_http_rate_limit_waits_before_first_retry():
+    retry = fetching.LoggedRetry(total=2, backoff_factor=1)
+    first = retry.increment(method="GET", url="/article", response=HTTPResponse(status=429))
+    second = first.increment(method="GET", url="/article", response=HTTPResponse(status=429))
+    assert first.get_backoff_time() == 1
+    assert second.get_backoff_time() == 2
+
+
+def test_invalid_http_retry_hint_uses_backoff_and_excessive_wait_is_not_shortened():
+    retry = fetching.LoggedRetry(total=2, retry_after_max=30)
+    assert retry.get_retry_after(HTTPResponse(headers={"Retry-After": "invalid"})) is None
+    with pytest.raises(FetchError, match="skipping instead of retrying early"):
+        retry.get_retry_after(HTTPResponse(headers={"Retry-After": "3600"}))
+
+
+@pytest.mark.parametrize("final_status", [200, 429])
+def test_http_adapter_retries_rate_limits_and_preserves_the_final_response(
+    monkeypatch, final_status
+):
+    sleep = MagicMock()
+    monkeypatch.setattr("urllib3.util.retry.time.sleep", sleep)
+    statuses = [429, 429, final_status]
+
+    class Handler(BaseHTTPRequestHandler):
+        count = 0
+
+        def do_GET(self):
+            status = statuses[self.count]
+            type(self).count += 1
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(ARTICLE)))
+            self.end_headers()
+            self.wfile.write(ARTICLE.encode())
+
+        def log_message(self, *args):
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = f"http://127.0.0.1:{server.server_port}/article"
+        try:
+            with fetching.make_session(Config(max_retries=2)) as session:
+                session.trust_env = False
+                if final_status == 200:
+                    assert fetching.fetch_article_text(session, Story(1, "Title", url), Config())
+                else:
+                    with pytest.raises(FetchError, match="HTTP 429.*retry budget exhausted"):
+                        fetching.fetch_article_text(session, Story(1, "Title", url), Config())
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+    assert Handler.count == 3
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
