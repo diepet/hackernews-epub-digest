@@ -258,12 +258,14 @@ def test_oversized_article_is_trimmed_to_fit_tpm(sdk, monkeypatch):
     monkeypatch.setattr(
         sdk, "token_counter", lambda **kwargs: sum(len(m["content"]) for m in kwargs["messages"])
     )
-    config = Config(llm_model="test", llm_tpm_limit=3000, llm_max_output_tokens=1800)
-    messages, reserved = llm.prepare_request(
-        "Source paragraph. " * 1000, "Title", "https://example.org", config
+    config = Config(llm_model="test", llm_tpm_limit=10000, llm_max_output_tokens=1800)
+    source = "Source paragraph. " * 1000
+    messages, reserved = llm.prepare_request(source, "Title", "https://example.org", config)
+    assert reserved <= config.llm_tpm_limit
+    assert messages[0]["content"] == config.llm_system_prompt.replace(
+        "{target_language}", "Italian"
     )
-    assert reserved <= 3000
-    assert sum(len(m["content"]) for m in messages) < 2000
+    assert source not in messages[1]["content"]
     assert "Source paragraph." in messages[1]["content"]
 
 

@@ -56,7 +56,7 @@ Supply the credential for the selected provider, for example `GEMINI_API_KEY`, `
 
 ### Summary prompt
 
-Set `LLM_SYSTEM_PROMPT` to replace the summary instructions. The default asks for 2–4 connected Markdown paragraphs, beginning with the main finding and preserving technical details and caveats. It also tells the model to ignore instructions inside article text and avoid invented facts, preambles, and HTML. The full default is included in `.env.example`.
+Set `LLM_SYSTEM_PROMPT` to replace the summary instructions. The default casts the model as a senior technology editor and follows the original editorial structure: a strong opening, a connected explanation of how and why, and the supported impact. It preserves technical depth, figures, caveats, attribution, and uncertainty, with the length determined by the source. It also tells the model to ignore instructions inside scraped content and avoid invented facts, preambles, and HTML. The full default is included as a quoted multiline value in `.env.example`.
 
 For example:
 
@@ -66,7 +66,15 @@ LLM_SYSTEM_PROMPT="Summarize in {target_language} using 3 detailed Markdown para
 
 `{target_language}` is replaced with `TARGET_LANGUAGE`. Other braces, such as those in JSON examples, are preserved. An unset, empty, or whitespace-only value uses the built-in prompt; multiline quoted values are supported in `.env` files.
 
-The instructions are sent as a system message. The title, URL, target language, and article text are sent separately as a user message. Token budgeting includes both messages, including any custom prompt. To use a custom prompt in GitHub Actions, add `LLM_SYSTEM_PROMPT` as an Actions variable.
+The instructions are sent as a system message. The title, URL, target language, and article text are sent separately as a user message. Token budgeting includes both messages, including any custom prompt.
+
+Use the same environment variable name everywhere:
+
+- **GitHub:** under **Settings → Secrets and variables → Actions → Variables**, create `LLM_SYSTEM_PROMPT` and paste the prompt as its value, without surrounding quotes. It applies to both scheduled and manually triggered runs.
+- **Local `.env`:** add `LLM_SYSTEM_PROMPT="Your prompt"`, then run `uv run --frozen --env-file .env python main.py`.
+- **Shell:** export `LLM_SYSTEM_PROMPT="Your prompt"`, then run `uv run --frozen python main.py`.
+
+If the variable is unset or blank, the built-in prompt is used. The GitHub workflow has no manual configuration inputs.
 
 ### AI throttling
 
@@ -120,8 +128,8 @@ The daily workflow is [`.github/workflows/schedule.yaml`](.github/workflows/sche
 1. Add provider and email credentials under **Settings → Secrets and variables → Actions → Secrets**.
 2. Set optional settings such as `LLM_MODEL`, `LLM_SYSTEM_PROMPT`, `TARGET_LANGUAGE`, and `STORY_LIMIT` under **Variables**. For Azure, set `AZURE_API_VERSION` as a variable and the endpoint/key as secrets.
 3. Open **Actions → Daily HN Digest** and enable the workflow if disabled.
-4. Use **Run workflow → scrape-only** to check sources without credentials. Use **dry-run** to check real AI summaries. Download the EPUB and report from the run artifact.
-5. Use **deliver** for a real delivery check. Scheduled runs use delivery mode automatically. Enable GitHub's Actions failure notifications to receive alerts for failed runs.
+4. The workflow uses the same configured variables for scheduled and manually triggered runs. It generates and emails the digest by default. To preview through GitHub Actions, set the repository variable `RUN_MODE` to `scrape-only` (no AI or email) or `dry-run` (real AI, no email), then click **Run workflow**. Download the EPUB and report from the run artifact.
+5. Set `RUN_MODE` to `deliver`, or remove it, to enable delivery. This setting applies to scheduled runs too. Enable GitHub's Actions failure notifications to receive alerts for failed runs.
 
 Artifacts are retained for seven days, including on failed runs if files were generated. Runs have a 30-minute job limit, and concurrent delivery jobs are serialized. The separate checks workflow runs linting and offline regression tests without secrets.
 
@@ -139,10 +147,10 @@ After publishing the changes, an account with repository write access can restor
 
 ```bash
 gh workflow enable schedule.yaml --repo diepet/hackernews-epub-digest
-gh workflow run schedule.yaml --repo diepet/hackernews-epub-digest -f mode=dry-run
+gh workflow run schedule.yaml --repo diepet/hackernews-epub-digest
 ```
 
-Inspect the preview artifact, then select `deliver` in the workflow UI to check actual delivery.
+Set the repository variable `RUN_MODE=dry-run` before triggering a preview. Inspect the artifact, then remove `RUN_MODE` or set it to `deliver` to enable email delivery.
 
 ## Development
 

@@ -5,15 +5,6 @@ on:
     # 04:17 CET / 05:17 CEST; avoid the busy start of the UTC hour.
     - cron: '17 3 * * *'
   workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Choose delivery, AI preview, or credential-free scraping preview'
-        type: choice
-        default: dry-run
-        options:
-          - dry-run
-          - scrape-only
-          - deliver
 
 permissions:
   contents: read
@@ -40,7 +31,7 @@ jobs:
       LLM_TIMEOUT: ${{ vars.LLM_TIMEOUT || '90' }}
       SMTP_TIMEOUT: ${{ vars.SMTP_TIMEOUT || '30' }}
       MAX_RETRIES: ${{ vars.MAX_RETRIES || '2' }}
-      RUN_MODE: ${{ github.event_name == 'schedule' && 'deliver' || inputs.mode }}
+      RUN_MODE: ${{ vars.RUN_MODE || 'deliver' }}
 
     steps:
       - name: Checkout code
