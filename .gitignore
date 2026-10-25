@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local configuration, generated digests, and tooling caches
+.env
+.env.*
+!.env.example
+output/
+*.epub
+.pytest_cache/
+.ruff_cache/

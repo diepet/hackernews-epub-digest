@@ -2,54 +2,107 @@ name: Daily HN Digest
 
 on:
   schedule:
-    # 03:00 UTC is usually 04:00 CET (Winter) / 05:00 CEST (Summer)
-    - cron: '0 3 * * *'
-  workflow_dispatch: # Allows manual trigger from GitHub UI for testing
+    # 04:17 CET / 05:17 CEST; avoid the busy start of the UTC hour.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Choose delivery, AI preview, or credential-free scraping preview'
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - scrape-only
+          - deliver
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-hn-digest
+  cancel-in-progress: false
 
 jobs:
   run-digest:
     runs-on: ubuntu-latest
-    
-    # LOGIC: 
-    # 1. Look for a GitHub Variable (vars.NAME)
-    # 2. If not found, use the hardcoded default (|| 'value')
+    timeout-minutes: 30
     env:
       TARGET_LANGUAGE: ${{ vars.TARGET_LANGUAGE || 'English' }}
       STORY_LIMIT: ${{ vars.STORY_LIMIT || '10' }}
-      LLM_REQUEST_DELAY: ${{ vars.LLM_REQUEST_DELAY || '0' }}
+      LLM_RPM_LIMIT: ${{ vars.LLM_RPM_LIMIT || '0' }}
+      LLM_TPM_LIMIT: ${{ vars.LLM_TPM_LIMIT || '0' }}
+      LLM_MAX_OUTPUT_TOKENS: ${{ vars.LLM_MAX_OUTPUT_TOKENS || '1800' }}
+      LLM_MAX_WAIT_SECONDS: ${{ vars.LLM_MAX_WAIT_SECONDS || '300' }}
       SCRAPE_CHAR_LIMIT: ${{ vars.SCRAPE_CHAR_LIMIT || '60000' }}
       LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemma-3-27b-it' }}
+      HTTP_TIMEOUT: ${{ vars.HTTP_TIMEOUT || '20' }}
+      LLM_TIMEOUT: ${{ vars.LLM_TIMEOUT || '90' }}
+      SMTP_TIMEOUT: ${{ vars.SMTP_TIMEOUT || '30' }}
+      MAX_RETRIES: ${{ vars.MAX_RETRIES || '2' }}
+      RUN_MODE: ${{ github.event_name == 'schedule' && 'deliver' || inputs.mode }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-
-      # 1. Install uv
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: actions/checkout@v7
         with:
-          version: "latest"
+          persist-credentials: false
 
-      # 2. Set up Python
-      - name: Set up Python
-        run: uv python install
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: '0.13.5'
+          enable-cache: true
+          python-version: '3.12'
 
-      # 3. Install Dependencies
-      - name: Install dependencies
-        run: uv sync
+      - name: Install locked dependencies
+        run: uv sync --locked --no-dev
 
-      # 4. Run the Script
-      - name: Run Digest Script
+      - name: Build digest
         env:
-          # AI Keys (Map the one you are using)
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
-          # Email Config
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
+          AZURE_API_VERSION: ${{ vars.AZURE_API_VERSION }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_SENDER_EMAIL: ${{ secrets.SMTP_SENDER_EMAIL }}
           PUBLISH_EMAIL: ${{ secrets.PUBLISH_EMAIL }}
-          
-        run: uv run python main.py
+        run: |
+          case "$RUN_MODE" in
+            deliver) uv run --frozen --no-dev python main.py ;;
+            dry-run) uv run --frozen --no-dev python main.py --dry-run ;;
+            scrape-only) uv run --frozen --no-dev python main.py --no-llm ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Keep EPUB and run report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hn-digest-${{ github.run_id }}
+          path: output/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Add run summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path('output/run-report.json')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              if not path.exists():
+                  summary.write('No run report: check dependency installation and configuration logs.\n')
+              else:
+                  report = json.loads(path.read_text())
+                  for key in ('mode', 'status', 'requested', 'fetched', 'extracted', 'summarized', 'email_sent'):
+                      summary.write(f'- **{key}**: {report[key]}\n')
+                  summary.write('\nDownload the artifact for the EPUB and per-story error stages.\n')
+          PY
