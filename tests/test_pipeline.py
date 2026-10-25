@@ -134,6 +134,7 @@ def test_ai_response_validation_and_timeouts(monkeypatch, text, finish, valid):
     )
     completion = MagicMock(return_value=response)
     monkeypatch.setattr(litellm, "completion", completion)
+    monkeypatch.setattr(litellm, "token_counter", MagicMock(return_value=1000))
     if valid:
         assert (
             pipeline.summarize_article(

@@ -27,14 +27,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      TARGET_LANGUAGE: ${{ vars.TARGET_LANGUAGE || 'English' }}
-      STORY_LIMIT: ${{ vars.STORY_LIMIT || '10' }}
-      LLM_RPM_LIMIT: ${{ vars.LLM_RPM_LIMIT || '0' }}
-      LLM_TPM_LIMIT: ${{ vars.LLM_TPM_LIMIT || '0' }}
-      LLM_MAX_OUTPUT_TOKENS: ${{ vars.LLM_MAX_OUTPUT_TOKENS || '1800' }}
+      TARGET_LANGUAGE: ${{ vars.TARGET_LANGUAGE || 'Italian' }}
+      STORY_LIMIT: ${{ vars.STORY_LIMIT || '30' }}
+      LLM_RPM_LIMIT: ${{ vars.LLM_RPM_LIMIT || '15' }}
+      LLM_TPM_LIMIT: ${{ vars.LLM_TPM_LIMIT || '250000' }}
+      LLM_MAX_OUTPUT_TOKENS: ${{ vars.LLM_MAX_OUTPUT_TOKENS || '10000' }}
       LLM_MAX_WAIT_SECONDS: ${{ vars.LLM_MAX_WAIT_SECONDS || '300' }}
-      SCRAPE_CHAR_LIMIT: ${{ vars.SCRAPE_CHAR_LIMIT || '60000' }}
-      LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemma-3-27b-it' }}
+      SCRAPE_CHAR_LIMIT: ${{ vars.SCRAPE_CHAR_LIMIT || '500000' }}
+      LLM_MODEL: ${{ vars.LLM_MODEL || 'gemini/gemini-3.5-flash-lite' }}
+      LLM_SYSTEM_PROMPT: ${{ vars.LLM_SYSTEM_PROMPT }}
       HTTP_TIMEOUT: ${{ vars.HTTP_TIMEOUT || '20' }}
       LLM_TIMEOUT: ${{ vars.LLM_TIMEOUT || '90' }}
       SMTP_TIMEOUT: ${{ vars.SMTP_TIMEOUT || '30' }}

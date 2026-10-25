@@ -37,6 +37,7 @@ def sdk(monkeypatch):
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     import litellm
 
+    monkeypatch.setattr(litellm, "token_counter", MagicMock(return_value=1000))
     return litellm
 
 
@@ -63,7 +64,7 @@ def rate_error(sdk, *, headers=None, body=None):
 
 
 def test_no_local_limits_needs_no_pause(clock):
-    limiter = RateLimiter(Config())
+    limiter = RateLimiter(Config(llm_rpm_limit=0, llm_tpm_limit=0))
     for _ in range(10):
         limiter.acquire(100)
     assert clock.sleeps == []
@@ -247,23 +248,23 @@ def test_transient_failure_retries_through_the_same_limiter(sdk, clock, monkeypa
 def test_model_tokenizer_and_output_allowance_are_included(sdk, monkeypatch):
     counter = MagicMock(return_value=1000)
     monkeypatch.setattr(sdk, "token_counter", counter)
-    config = Config(llm_model="gemini/custom-model", llm_tpm_limit=5000)
+    config = Config(llm_model="gemini/custom-model", llm_tpm_limit=15000)
     messages, reserved = llm.prepare_request("Source", "Title", "https://example.org", config)
-    assert reserved == 1150 + 1800
+    assert reserved == 1150 + 10000
     counter.assert_called_once_with(model=config.llm_model, messages=messages)
 
 
 def test_oversized_article_is_trimmed_to_fit_tpm(sdk, monkeypatch):
     monkeypatch.setattr(
-        sdk, "token_counter", lambda **kwargs: len(kwargs["messages"][0]["content"])
+        sdk, "token_counter", lambda **kwargs: sum(len(m["content"]) for m in kwargs["messages"])
     )
-    config = Config(llm_model="test", llm_tpm_limit=3000)
+    config = Config(llm_model="test", llm_tpm_limit=3000, llm_max_output_tokens=1800)
     messages, reserved = llm.prepare_request(
         "Source paragraph. " * 1000, "Title", "https://example.org", config
     )
     assert reserved <= 3000
-    assert len(messages[0]["content"]) < 2000
-    assert "Source paragraph." in messages[0]["content"]
+    assert sum(len(m["content"]) for m in messages) < 2000
+    assert "Source paragraph." in messages[1]["content"]
 
 
 def test_tpm_too_small_for_prompt_and_output_fails_before_generation(sdk, clock, monkeypatch):
