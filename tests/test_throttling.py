@@ -258,7 +258,13 @@ def test_oversized_article_is_trimmed_to_fit_tpm(sdk, monkeypatch):
     monkeypatch.setattr(
         sdk, "token_counter", lambda **kwargs: sum(len(m["content"]) for m in kwargs["messages"])
     )
-    config = Config(llm_model="test", llm_tpm_limit=10000, llm_max_output_tokens=1800)
+    # Keep this budget test independent of changes to the default editorial prompt.
+    config = Config(
+        llm_model="test",
+        llm_system_prompt="Summarize the supplied article in {target_language}.",
+        llm_tpm_limit=10000,
+        llm_max_output_tokens=1800,
+    )
     source = "Source paragraph. " * 1000
     messages, reserved = llm.prepare_request(source, "Title", "https://example.org", config)
     assert reserved <= config.llm_tpm_limit
