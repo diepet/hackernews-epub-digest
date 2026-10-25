@@ -3,6 +3,7 @@
 import math
 import os
 import random
+import time
 
 import structlog
 
@@ -50,7 +51,7 @@ def estimate_tokens(messages: list[dict[str, str]], config: Config) -> int:
     except Exception:
         # Counting must not prevent generation for custom model/deployment names.
         # UTF-8 byte length is deliberately conservative for ordinary text tokenizers.
-        log.warning("Model tokenizer unavailable; estimating from UTF-8 bytes")
+        log.warning("Model tokenizer unavailable; estimating from UTF-8 bytes", stage="LLM")
         tokens = sum(len(message["content"].encode("utf-8")) + 16 for message in messages)
     return math.ceil(tokens * 1.15)
 
@@ -81,11 +82,34 @@ def prepare_request(
         raise ModelError("LLM_TPM_LIMIT is too small: increase it or lower LLM_MAX_OUTPUT_TOKENS")
     log.info(
         "Trimmed source to fit LLM_TPM_LIMIT",
+        stage="LLM",
         original_characters=len(text),
         sent_characters=best[2],
         reserved_tokens=best[1],
     )
     return best[0], best[1]
+
+
+def usage_counts(response) -> dict[str, int | None]:
+    """Keep actual provider counts distinct from the local budget reservation."""
+    usage = getattr(response, "usage", None)
+
+    def value(obj, key):
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+    details = value(usage, "completion_tokens_details")
+    counts = {
+        "prompt_tokens": value(usage, "prompt_tokens"),
+        "completion_tokens": value(usage, "completion_tokens"),
+        "thinking_tokens": value(details, "reasoning_tokens"),
+        "reported_tokens": value(usage, "total_tokens"),
+    }
+    return {
+        key: number
+        if isinstance(number, int) and not isinstance(number, bool) and number >= 0
+        else None
+        for key, number in counts.items()
+    }
 
 
 def summarize_article(
@@ -110,6 +134,15 @@ def summarize_article(
     for attempt in range(config.max_retries + 1):
         try:
             reservation = limiter.acquire(reserved)
+            log.info(
+                "Sending summary request",
+                stage="LLM",
+                model=config.llm_model,
+                attempt=f"{attempt + 1}/{config.max_retries + 1}",
+                reserved_tokens=reserved if reserved else "not tracked (TPM limit disabled)",
+                max_output_tokens=config.llm_max_output_tokens,
+            )
+            request_started = time.monotonic()
             response = completion(
                 model=config.llm_model,
                 messages=messages,
@@ -118,16 +151,29 @@ def summarize_article(
                 max_retries=0,
                 max_tokens=config.llm_max_output_tokens,
             )
-            usage = getattr(response, "usage", None)
-            total_tokens = getattr(usage, "total_tokens", None)
-            limiter.record_usage(reservation, total_tokens)
+            counts = usage_counts(response)
+            limiter.record_usage(
+                reservation,
+                counts["reported_tokens"],
+                **{key: value for key, value in counts.items() if key != "reported_tokens"},
+            )
             log.info(
-                "LLM response received", reserved_tokens=reserved, reported_tokens=total_tokens
+                "Provider response received",
+                stage="LLM",
+                duration_seconds=round(time.monotonic() - request_started, 2),
+                **{key: value for key, value in counts.items() if value is not None},
+                usage_status="reported"
+                if counts["reported_tokens"] is not None
+                else "token usage not reported by provider",
             )
             choice = response.choices[0]
             result = choice.message.content
             if not isinstance(result, str) or not result.strip():
                 raise SummaryError("Provider returned an empty summary")
+            if choice.finish_reason == "length":
+                raise SummaryError(
+                    "Summary reached LLM_MAX_OUTPUT_TOKENS; increase the output allowance"
+                )
             if choice.finish_reason != "stop":
                 raise SummaryError("Provider returned an incomplete or blocked summary")
             return result.strip()
@@ -146,15 +192,21 @@ def summarize_article(
                 raise SummaryError("Provider rate limit persisted after bounded retries") from exc
             log.warning(
                 "Provider rate limit; retrying after cooldown",
+                stage="Throttle",
                 seconds=round(delay, 2),
                 retry=attempt + 1,
             )
         except (APIConnectionError, InternalServerError, ServiceUnavailableError, Timeout) as exc:
             if attempt == config.max_retries:
                 raise SummaryError(f"LLM request failed ({type(exc).__name__})") from exc
-            limiter.defer(2**attempt + random.uniform(0, 1))
+            delay = 2**attempt + random.uniform(0, 1)
+            limiter.defer(delay)
             log.warning(
-                "Transient LLM failure; retrying", error_type=type(exc).__name__, retry=attempt + 1
+                "Transient LLM failure; retrying",
+                stage="LLM",
+                error_type=type(exc).__name__,
+                retry=attempt + 1,
+                seconds=round(delay, 2),
             )
         except ThrottleError as exc:
             raise ModelError(str(exc)) from exc

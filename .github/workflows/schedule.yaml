@@ -31,6 +31,9 @@ jobs:
       LLM_TIMEOUT: ${{ vars.LLM_TIMEOUT || '90' }}
       SMTP_TIMEOUT: ${{ vars.SMTP_TIMEOUT || '30' }}
       MAX_RETRIES: ${{ vars.MAX_RETRIES || '2' }}
+      LOG_FORMAT: ${{ vars.LOG_FORMAT || 'text' }}
+      LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+      ROOT_LOG_LEVEL: ${{ vars.ROOT_LOG_LEVEL || 'WARNING' }}
       RUN_MODE: ${{ vars.RUN_MODE || 'deliver' }}
 
     steps:
@@ -86,6 +89,7 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          from html import escape
           from pathlib import Path
 
           path = Path('output/run-report.json')
@@ -94,7 +98,24 @@ jobs:
                   summary.write('No run report: check dependency installation and configuration logs.\n')
               else:
                   report = json.loads(path.read_text())
-                  for key in ('mode', 'status', 'requested', 'fetched', 'extracted', 'summarized', 'email_sent'):
-                      summary.write(f'- **{key}**: {report[key]}\n')
-                  summary.write('\nDownload the artifact for the EPUB and per-story error stages.\n')
+                  summary.write('## Digest result\n\n')
+                  labels = {'mode': 'Mode', 'status': 'Result', 'requested': 'Requested stories',
+                            'fetched': 'Fetched stories', 'extracted': 'Readable sources',
+                            'summarized': 'Generated summaries', 'email_sent': 'SMTP accepted email',
+                            'duration_seconds': 'Elapsed seconds'}
+                  for key, label in labels.items():
+                      summary.write(f'- **{label}**: {report.get(key, "not reported")}\n')
+                  if report.get('failure_reason'):
+                      summary.write(f'\n**Failure:** {escape(report["failure_reason"])}\n')
+                  if report.get('llm'):
+                      llm = report['llm']
+                      summary.write(f'\nLLM attempts: {llm["requests_sent"]}; rate limits: {llm["rate_limits_seen"]}; '
+                                    f'waiting: {llm["wait_seconds"]}s; reported tokens: {llm["reported_tokens"] if llm["reported_tokens"] is not None else "not reported"}.\n')
+                  summary.write('\n| Story | Result | Source characters | Summary words |\n| --- | --- | ---: | ---: |\n')
+                  for item in report.get('stories', []):
+                      title = escape(item['title']).replace('|', '&#124;').replace('\n', ' ').replace('\r', ' ')
+                      status = item['status'].replace('_', ' ')
+                      summary.write(f'| {title} | {status} | {item.get("source_characters", "—")} | '
+                                    f'{item.get("summary_words", "—")} |\n')
+                  summary.write('\nDownload the artifact for the EPUB and detailed run report.\n')
           PY

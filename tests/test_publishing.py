@@ -36,6 +36,28 @@ def test_epub_is_valid_xhtml_and_escapes_metadata(tmp_path):
         assert "HN discussion" in chapter
 
 
+def test_compact_key_messages_keep_bold_labels_bullets_and_original_link(tmp_path):
+    summary = (
+        "**Una mappa confronta il valore di mercato e i dipendenti delle aziende.**\n\n"
+        "- **Come funziona:** le bolle rappresentano la capitalizzazione.\n"
+        "- **Messaggio chiave:** il valore per dipendente varia tra aziende e settori.\n"
+        "- **Limite:** i dati sugli organici possono essere meno recenti."
+    )
+    story = Story(1, "Market map", "https://example.org/article?id=1&view=full")
+    path = publishing.create_epub(
+        [Article(story, summary, "summary")], tmp_path, Config(), preview=False
+    )
+    with zipfile.ZipFile(path) as archive:
+        chapter = ET.fromstring(archive.read("EPUB/story_0.xhtml"))
+    ns = {"x": "http://www.w3.org/1999/xhtml"}
+    bullets = chapter.findall(".//x:ul/x:li", ns)
+    assert len(bullets) == 3
+    assert all(bullet.find("x:strong", ns) is not None for bullet in bullets)
+    assert any("Una mappa" in (node.text or "") for node in chapter.findall(".//x:p/x:strong", ns))
+    links = chapter.findall(".//x:a", ns)
+    assert any(link.get("href") == story.url and link.text == "Original source" for link in links)
+
+
 @pytest.mark.parametrize("port", [465, 587])
 def test_smtp_uses_tls_timeout_and_epub_attachment(monkeypatch, tmp_path, port):
     path = tmp_path / "digest.epub"

@@ -3,6 +3,7 @@
 import datetime as dt
 import smtplib
 import ssl
+import time
 import uuid
 from dataclasses import dataclass
 from email.message import EmailMessage
@@ -69,6 +70,15 @@ def create_epub(
 ) -> Path:
     if not articles:
         raise ValueError("Cannot create an empty digest")
+    started = time.monotonic()
+    log.info(
+        "Building EPUB",
+        stage="EPUB",
+        stories=len(articles),
+        language=config.target_language,
+        summaries=sum(a.status == "summary" for a in articles),
+        unavailable=sum(a.status == "unavailable" for a in articles),
+    )
     now = dt.datetime.now(dt.UTC)
     edition = now.date().isoformat()
     book = epub.EpubBook()
@@ -90,6 +100,13 @@ def create_epub(
     book.add_item(intro)
     chapters = [intro]
     for index, article in enumerate(articles):
+        log.debug(
+            "Adding EPUB chapter",
+            stage="EPUB",
+            chapter=index + 1,
+            title=article.story.title,
+            content_status=article.status,
+        )
         story = article.story
         if article.status == "summary":
             body = render_markdown(article.text)
@@ -119,11 +136,25 @@ def create_epub(
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{identifier}.epub"
     epub.write_epub(str(path), book, {"raise_exceptions": True})
-    log.info("EPUB created", filename=path.name, stories=len(articles))
+    log.info(
+        "EPUB saved",
+        stage="EPUB",
+        path=str(path),
+        stories=len(articles),
+        size_bytes=path.stat().st_size,
+        duration_seconds=round(time.monotonic() - started, 2),
+    )
     return path
 
 
 def send_email(path: Path, config: Config) -> None:
+    started = time.monotonic()
+    log.info(
+        "Preparing EPUB email attachment",
+        stage="Email",
+        filename=path.name,
+        size_bytes=path.stat().st_size,
+    )
     sender = config.smtp_sender_email or config.smtp_user
     message = EmailMessage()
     message["From"] = sender
@@ -136,6 +167,13 @@ def send_email(path: Path, config: Config) -> None:
         path.read_bytes(), maintype="application", subtype="epub+zip", filename=path.name
     )
     context = ssl.create_default_context()
+    log.info(
+        "Connecting to mail server",
+        stage="Email",
+        port=config.smtp_port,
+        security="SSL/TLS" if config.smtp_port == 465 else "STARTTLS",
+        timeout_seconds=config.smtp_timeout,
+    )
     # Do not retry SMTP sends: a timeout after DATA may still mean the message was delivered.
     if config.smtp_port == 465:
         server = smtplib.SMTP_SSL(
@@ -148,8 +186,15 @@ def send_email(path: Path, config: Config) -> None:
             server.ehlo()
             server.starttls(context=context)
             server.ehlo()
+            log.info("Encrypted mail connection established", stage="Email")
+        log.info("Authenticating with mail server", stage="Email")
         server.login(config.smtp_user, config.smtp_password)
+        log.info("Submitting digest to mail server", stage="Email")
         refused = server.send_message(message, from_addr=sender, to_addrs=[config.publish_email])
         if refused:
             raise RuntimeError("SMTP refused the digest recipient")
-    log.info("SMTP accepted the digest")
+    log.info(
+        "Mail server accepted the digest; inbox/device delivery is not confirmed",
+        stage="Email",
+        duration_seconds=round(time.monotonic() - started, 2),
+    )

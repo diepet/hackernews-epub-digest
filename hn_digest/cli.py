@@ -1,66 +1,15 @@
-"""Command line entry point and structured logging."""
+"""Command line entry point for digest generation and delivery."""
 
 import argparse
-import logging
 import os
-import sys
-import uuid
 from pathlib import Path
 
 import structlog
 
 from hn_digest.config import Config
 from hn_digest.llm import ModelError
+from hn_digest.logging_config import configure_logging
 from hn_digest.pipeline import run_digest
-
-
-def configure_logging() -> None:
-    structlog.contextvars.clear_contextvars()
-    structlog.contextvars.bind_contextvars(
-        **{
-            "service.name": "hackernews-epub-digest",
-            "job.name": "daily-digest",
-            "trace.id": uuid.uuid4().hex,
-        }
-    )
-
-    def fields(logger, method_name, event_dict):
-        event_dict["message"] = event_dict.pop("event", "")
-        event_dict["log.level"] = event_dict.pop("level", method_name)
-        return event_dict
-
-    processors = [
-        structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso", key="@timestamp"),
-        fields,
-    ]
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(
-        structlog.stdlib.ProcessorFormatter(
-            foreign_pre_chain=processors,
-            processors=[
-                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                structlog.processors.JSONRenderer(),
-            ],
-        )
-    )
-    root = logging.getLogger()
-    root.handlers = [handler]
-    root.setLevel(
-        getattr(logging, os.environ.get("ROOT_LOG_LEVEL", "WARNING").upper(), logging.WARNING)
-    )
-    logging.getLogger("hn_digest").setLevel(
-        getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
-    )
-    structlog.configure(
-        processors=[
-            structlog.stdlib.filter_by_level,
-            *processors,
-            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
-        ],
-        logger_factory=structlog.stdlib.LoggerFactory(),
-    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,7 +22,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output-dir", type=Path, default=Path("output"))
     args = parser.parse_args(argv)
-    configure_logging()
+    try:
+        configure_logging()
+    except ValueError as exc:
+        print(f"ERROR [Config] {exc}", flush=True)
+        return 1
     log = structlog.get_logger(__name__)
     if os.environ.get("LLM_REQUEST_DELAY", "").strip() not in {"", "0"}:
         log.warning(
@@ -83,16 +36,17 @@ def main(argv: list[str] | None = None) -> int:
         config = Config.from_env()
         config.validate(dry_run=args.dry_run, no_llm=args.no_llm)
     except ValueError as exc:
-        log.error("Invalid configuration", reason=str(exc))
+        log.error("Invalid configuration", stage="Config", reason=str(exc))
         return 1
     try:
         return run_digest(config, args.output_dir, dry_run=args.dry_run, no_llm=args.no_llm)
     except ModelError as exc:
-        log.error("LLM configuration or quota failure", reason=str(exc))
+        log.error("LLM configuration or quota failure", stage="LLM", reason=str(exc))
         return 1
     except Exception as exc:
         log.error(
             "Digest failed",
+            stage="Run",
             error_type=type(exc).__name__,
             action="Check configuration, provider access, SMTP settings, and run-report.json",
         )

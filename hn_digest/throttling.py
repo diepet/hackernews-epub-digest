@@ -35,6 +35,13 @@ class RateLimiter:
         self.rate_limits_seen = 0
         self.wait_seconds = 0.0
         self.reported_tokens = 0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.thinking_tokens = 0
+        self.usage_counts_reported = {
+            key: 0
+            for key in ("reported_tokens", "prompt_tokens", "completion_tokens", "thinking_tokens")
+        }
 
     def defer(self, seconds: float) -> None:
         if not math.isfinite(seconds) or seconds > self.config.llm_max_wait_seconds:
@@ -50,8 +57,9 @@ class RateLimiter:
                 self.reservations.popleft()
             request_limit = self.config.llm_rpm_limit
             token_limit = self.config.llm_tpm_limit
+            window_tokens = sum(r.tokens for r in self.reservations)
             full = (request_limit and len(self.reservations) >= request_limit) or (
-                token_limit and sum(r.tokens for r in self.reservations) + tokens > token_limit
+                token_limit and window_tokens + tokens > token_limit
             )
             wait = max(0.0, self.cooldown_until - now)
             if full:
@@ -61,22 +69,44 @@ class RateLimiter:
                 self.reservations.append(reservation)
                 self.requests_sent += 1
                 return reservation
-            log.info("Waiting for LLM rate budget", seconds=round(wait, 2))
+            reasons = []
+            if self.cooldown_until > now:
+                reasons.append("provider cooldown")
+            if request_limit and len(self.reservations) >= request_limit:
+                reasons.append("requests/minute limit")
+            if token_limit and window_tokens + tokens > token_limit:
+                reasons.append("tokens/minute limit")
+            log.info(
+                "Waiting before the next LLM request",
+                stage="Throttle",
+                seconds=round(wait, 2),
+                reason=", ".join(reasons),
+                requests_in_window=len(self.reservations),
+                tokens_in_window=window_tokens,
+            )
             # Keep individual sleeps short and emit progress during long provider cooldowns.
             pause = min(wait, 30.0)
             time.sleep(pause)
             self.wait_seconds += pause
 
-    def record_usage(self, reservation: Reservation, total_tokens: object) -> None:
+    def record_usage(
+        self, reservation: Reservation, total_tokens: object, **details: object
+    ) -> None:
         if (
             isinstance(total_tokens, int)
             and not isinstance(total_tokens, bool)
-            and total_tokens > 0
+            and total_tokens >= 0
         ):
             self.reported_tokens += total_tokens
+            self.usage_counts_reported["reported_tokens"] += 1
             # Some providers charge the reserved output allowance to their rate limit.
             # Keep that reservation even when actual output was shorter.
             reservation.tokens = max(reservation.tokens, total_tokens)
+        for key in ("prompt_tokens", "completion_tokens", "thinking_tokens"):
+            value = details.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                setattr(self, key, getattr(self, key) + value)
+                self.usage_counts_reported[key] += 1
 
 
 def duration(value: object) -> float | None:

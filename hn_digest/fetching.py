@@ -18,6 +18,7 @@ from trafilatura.settings import DEFAULT_CONFIG
 from urllib3.util.retry import Retry
 
 from hn_digest.config import Config
+from hn_digest.logging_config import safe_url
 
 log = structlog.get_logger(__name__)
 HN_API = "https://hacker-news.firebaseio.com/v0"
@@ -59,6 +60,24 @@ def http_url(url: str) -> bool:
         return False
 
 
+class LoggedRetry(Retry):
+    """Expose transient network retries without printing request headers or error bodies."""
+
+    def increment(self, method=None, url=None, response=None, error=None, **kwargs):
+        retry = super().increment(method=method, url=url, response=response, error=error, **kwargs)
+        delay = retry.get_retry_after(response) if response is not None else None
+        stage = "HN" if url and ("/v0/item/" in url or "topstories.json" in url) else "Source"
+        log.warning(
+            "HTTP request failed temporarily; retrying",
+            stage=stage,
+            url=safe_url(url or ""),
+            retry=len(retry.history),
+            reason=f"HTTP {response.status}" if response is not None else type(error).__name__,
+            seconds=delay or retry.get_backoff_time(),
+        )
+        return retry
+
+
 def make_session(config: Config) -> requests.Session:
     session = requests.Session()
     session.headers.update(
@@ -68,7 +87,7 @@ def make_session(config: Config) -> requests.Session:
             "Accept-Language": "en-US,en;q=0.9",
         }
     )
-    retry = Retry(
+    retry = LoggedRetry(
         total=config.max_retries,
         backoff_factor=1,
         backoff_max=10,
@@ -101,17 +120,35 @@ def download(session: requests.Session, url: str, config: Config) -> tuple[bytes
             if time.monotonic() - started > config.http_timeout * (config.max_retries + 2):
                 raise FetchError("Source exceeded download time limit")
             chunks.append(chunk)
-        return b"".join(chunks), response.headers.get("Content-Type", "").lower(), response.url
+        content_type = response.headers.get("Content-Type", "").lower()
+        # Item metadata is logged at DEBUG; article downloads are visible at INFO.
+        emit = log.debug if url.startswith(HN_API + "/") else log.info
+        emit(
+            "Download complete",
+            stage="Source",
+            url=safe_url(response.url),
+            http_status=response.status_code,
+            content_type=content_type or "not provided",
+            size_bytes=size,
+            retries=len(getattr(getattr(response.raw, "retries", None), "history", ()) or ()),
+            duration_seconds=round(time.monotonic() - started, 2),
+        )
+        return b"".join(chunks), content_type, response.url
 
 
 def get_top_stories(session: requests.Session, config: Config) -> list[Story]:
+    started = time.monotonic()
+    log.info("Fetching top stories from Hacker News", stage="HN", requested=config.story_limit)
     content, _, _ = download(session, f"{HN_API}/topstories.json", config)
     ids = json.loads(content)
     if not isinstance(ids, list) or not ids:
         raise FetchError("HN returned no top story IDs")
     stories = []
+    checked = 0
+    log.info("Top story IDs received", stage="HN", available=len(ids))
     # Replace deleted/unavailable entries instead of silently returning fewer stories.
     for story_id in ids[: config.story_limit * 3]:
+        checked += 1
         if not isinstance(story_id, int) or isinstance(story_id, bool):
             continue
         try:
@@ -139,12 +176,33 @@ def get_top_stories(session: requests.Session, config: Config) -> list[Story]:
                     self_post,
                 )
             )
+            log.debug(
+                "Story metadata retrieved",
+                stage="HN",
+                story_id=story_id,
+                title=item["title"],
+                url=safe_url(url),
+                author=item.get("by") or "Unknown",
+            )
         except (requests.RequestException, ValueError, FetchError) as exc:
-            log.warning("HN item unavailable", story_id=story_id, error_type=type(exc).__name__)
+            log.warning(
+                "HN item unavailable; trying the next item",
+                stage="HN",
+                story_id=story_id,
+                error_type=type(exc).__name__,
+            )
         if len(stories) == config.story_limit:
             break
     if not stories:
         raise FetchError("No usable HN stories were returned")
+    log.info(
+        "HN metadata retrieved",
+        stage="HN",
+        checked=checked,
+        selected=len(stories),
+        skipped=checked - len(stories),
+        duration_seconds=round(time.monotonic() - started, 2),
+    )
     return stories
 
 
@@ -158,6 +216,7 @@ def extract_html(content: bytes | str, url: str) -> str:
     # Prefer the GitHub README over repository navigation and file listings.
     readme = soup.select_one("article.markdown-body")
     if readme:
+        log.info("Extracting GitHub README", stage="Source", method="GitHub README")
         return readme.get_text("\n", strip=True)
     cleaned = str(soup)
     extraction_config = deepcopy(DEFAULT_CONFIG)
@@ -171,7 +230,9 @@ def extract_html(content: bytes | str, url: str) -> str:
         config=extraction_config,
     )
     if text and len(text.strip()) >= 200:
+        log.info("HTML article extracted", stage="Source", method="Trafilatura")
         return text
+    log.info("Using HTML extraction fallback", stage="Source", method="Beautiful Soup")
     main = soup.find("article") or soup.find("main") or soup.body or soup
     return main.get_text("\n", strip=True)
 
@@ -189,18 +250,31 @@ def extract_pdf(content: bytes, config: Config) -> str:
         size += len(text)
         if size >= config.scrape_char_limit:
             break
+    log.info(
+        "PDF text extracted",
+        stage="Source",
+        pages_read=len(parts),
+        total_pages=len(reader.pages),
+        characters=size,
+        limited=len(parts) < len(reader.pages),
+    )
     return "\n\n".join(parts)
 
 
 def fetch_article_text(session: requests.Session, story: Story, config: Config) -> str:
     try:
         if story.is_self_post:
+            log.info(
+                "Extracting HN post text from API metadata", stage="Source", method="HN self post"
+            )
             text = BeautifulSoup(story.text, "html.parser").get_text("\n", strip=True)
         else:
+            log.info("Downloading article", stage="Source", url=safe_url(story.url))
             content, content_type, final_url = download(session, story.url, config)
             if content.lstrip().startswith(b"%PDF-") or "application/pdf" in content_type:
                 text = extract_pdf(content, config)
             elif "text/plain" in content_type:
+                log.info("Decoding plain text source", stage="Source", method="plain text")
                 text = content.decode("utf-8", errors="replace")
             elif not content_type or "html" in content_type:
                 text = extract_html(content, final_url)
@@ -210,7 +284,15 @@ def fetch_article_text(session: requests.Session, story: Story, config: Config) 
         text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
         if len(text) < (40 if story.is_self_post else 200):
             raise FetchError("Source contains too little readable text")
-        return text[: config.scrape_char_limit]
+        kept = text[: config.scrape_char_limit]
+        if len(kept) < len(text):
+            log.info(
+                "Source shortened to SCRAPE_CHAR_LIMIT",
+                stage="Source",
+                extracted_characters=len(text),
+                kept_characters=len(kept),
+            )
+        return kept
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else "unknown"
         raise FetchError(f"Source returned HTTP {status}") from exc
